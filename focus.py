@@ -28,6 +28,11 @@ kernel32 = ctypes.windll.kernel32
 SAMPLE_MS = 5000
 IDLE_LIMIT = 180          # seconds without keyboard/mouse before time stops counting
 WATCH_IDLE_LIMIT = 20 * 60  # ...but watching a lecture is fine for longer
+# AI assistants: while one works on a long task you often just sit and wait (the owner noticed hours of Claude
+# counted as study). There, time only counts while you're typing or clicking: asking, reading and answering
+# do; waiting for it to finish doesn't.
+AGENT_IDLE_LIMIT = 45
+AGENT_KEYS = {"app:claude.exe", "app:chatgpt.exe", "app:chatgpt classic.exe", "web:Claude", "web:ChatGPT"}
 CATEGORIES = ("study", "other", "ignore")
 
 BROWSERS = {"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe", "arc.exe", "vivaldi.exe"}
@@ -80,6 +85,15 @@ DEFAULT_RULES = {
 
 class LASTINPUTINFO(ctypes.Structure):
     _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
+
+
+def idle_limit(key):
+    """Seconds without keyboard or mouse after which time in `key` stops counting."""
+    if key.endswith("· lectures"):
+        return WATCH_IDLE_LIMIT
+    if key in AGENT_KEYS or key.split(" · ")[0] in AGENT_KEYS:
+        return AGENT_IDLE_LIMIT
+    return IDLE_LIMIT
 
 
 def idle_seconds():
@@ -199,7 +213,7 @@ class FocusLog:
         key = key_for(exe, title)
         if not key or not elapsed:
             return
-        limit = WATCH_IDLE_LIMIT if key.endswith("· lectures") else IDLE_LIMIT
+        limit = idle_limit(key)
         if idle_seconds() > limit:
             return
         self.recent.append((now, key, title))
