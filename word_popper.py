@@ -57,7 +57,6 @@ MAX_SNIP_HEIGHT = 220         # pixels
 MAX_SNIP_PIXELS = 600_000
 MIN_LETTER_RATIO = 0.8        # OCR results with more symbols than this are treated as junk
 HOTKEY_MAX_SECONDS = 1.0   # holding Ctrl+Shift longer than this isn't a "tap"
-EXPANDED_SECONDS = 8
 TEXT_SIZES = {"small": 0.9, "normal": 1.0, "large": 1.25, "huge": 1.6}
 CARD_FONT_SIZES = {"word": 12, "pron": 10, "trans": 11, "senses": 9}
 
@@ -100,6 +99,69 @@ def system_language():
     if lang_id & 0x3FF == 0x04:
         return "zh-TW" if lang_id in (0x0404, 0x0C04, 0x1404) else "zh-CN"
     return WINDOWS_LANGS.get(lang_id & 0x3FF, "en")
+
+
+class SelectableText(tk.Text):
+    """Read-only text that sizes itself like a Label (as wide as its longest line, up to `wraplength`
+    pixels, as tall as its wrapped lines) and lets you select with the mouse."""
+
+    def __init__(self, master, font, fg, bg, **kw):
+        super().__init__(master, font=font, fg=fg, bg=bg, relief="flat", borderwidth=0, highlightthickness=0,
+                         wrap="word", padx=0, pady=0, cursor="xterm", height=1, width=1, takefocus=0,
+                         selectbackground="#3d6fa8", selectforeground="#ffffff", inactiveselectbackground="#3d6fa8",
+                         exportselection=False, **kw)
+        self._text, self._wrap, self._font = "", 320, font
+        self.on_resize = None      # called when the height changes once it's on screen (the card re-places itself)
+        self.bind("<Configure>", lambda e: self._fit())
+        super().configure(state="disabled")
+
+    def configure(self, cnf=None, **kw):
+        text = kw.pop("text", None)
+        wrap = kw.pop("wraplength", None)
+        if kw or cnf:
+            super().configure(cnf, **kw)
+        if wrap is not None:
+            self._wrap = int(wrap)
+        if text is not None or wrap is not None:
+            self._set(self._text if text is None else text)
+
+    config = configure
+
+    def cget(self, key):
+        return self._text if key == "text" else super().cget(key)
+
+    def _set(self, text):
+        self._text = text or ""
+        super().configure(state="normal")
+        self.delete("1.0", "end")
+        self.insert("1.0", self._text)
+        super().configure(state="disabled")
+        unit = max(1, self._font.measure("0"))
+        longest = max((self._font.measure(line) for line in self._text.split("\n")), default=0)
+        width = min(self._wrap, longest + unit)
+        super().configure(width=max(1, width // unit + 1))
+        # a first guess at the wrapped lines; _fit measures for real once the widget is on screen
+        guess = sum(max(1, -(-self._font.measure(line) // max(1, width))) for line in self._text.split("\n"))
+        super().configure(height=max(1, guess))
+        self._fit()
+
+    def _fit(self):
+        """Height = the wrapped lines as Tk lays them out (only meaningful once the widget is shown)."""
+        if not self.winfo_ismapped():
+            return
+        # count() gives the breaks between display lines (wrapped ones included): n breaks, n + 1 lines
+        n = self.count("1.0", "end-1c", "displaylines") or 0
+        n = n[0] if isinstance(n, tuple) else n
+        if int(self.cget("height")) != max(1, n + 1):
+            super().configure(height=max(1, n + 1))
+            if self.on_resize:
+                self.after_idle(self.on_resize)
+
+    def selection(self):
+        try:
+            return self.get("sel.first", "sel.last")
+        except tk.TclError:
+            return ""
 
 
 def load_settings():
@@ -224,26 +286,28 @@ class App:
         self.avatar.pack(side="left", padx=(0, 8))
         self.word_lbl = tk.Label(self.top_row, bg=BG, fg=FG, font=self.card_fonts["word"],
                                  anchor="w", justify="left")
-        self.pron_lbl = tk.Label(self.frame, bg=BG, fg=ACCENT, font=self.card_fonts["pron"], anchor="w")
-        self.trans_lbl = tk.Label(self.frame, bg=BG, fg=FG, font=self.card_fonts["trans"],
-                                  anchor="w", justify="left")
-        self.senses_lbl = tk.Label(self.frame, bg=BG, fg=FG_DIM, font=self.card_fonts["senses"],
-                                   anchor="w", justify="left")
+        # the details are selectable: press and drag across them to select (and copy) what you need
+        self.pron_lbl = SelectableText(self.frame, self.card_fonts["pron"], ACCENT, BG)
+        self.trans_lbl = SelectableText(self.frame, self.card_fonts["trans"], FG, BG)
+        self.senses_lbl = SelectableText(self.frame, self.card_fonts["senses"], FG_DIM, BG)
+        for w in (self.pron_lbl, self.trans_lbl, self.senses_lbl):
+            w.on_resize = lambda: self.place_window()
         self.word_lbl.pack(side="left", fill="x", expand=True)
         self.detail_widgets = [self.pron_lbl, self.trans_lbl, self.senses_lbl]
         self.apply_text_size()
 
-        for w in [root, self.frame, self.top_row, self.avatar, self.word_lbl, *self.detail_widgets]:
+        # the headword row moves the card (and a click there replays the word); the details below select text
+        for w in [root, self.frame, self.top_row, self.avatar, self.word_lbl]:
             w.bind("<ButtonPress-1>", self.on_press)
             w.bind("<B1-Motion>", self.on_drag)
             w.bind("<ButtonRelease-1>", self.on_release)
+        for w in [root, self.frame, self.top_row, self.avatar, self.word_lbl, *self.detail_widgets]:
             w.bind("<Button-3>", self.show_menu)
             w.bind("<Enter>", lambda e: self.set_bg(BG_HOVER))
             w.bind("<Leave>", lambda e: self.set_bg(BG))
-        # The card's lines are labels, so dragging moves the card instead of selecting text: double-click a
-        # line to copy it, or right-click -> Copy for the whole entry
-        for w in [self.word_lbl, *self.detail_widgets]:
-            w.bind("<Double-Button-1>", lambda e, w=w: self.copy_text(w.cget("text")))
+        self.word_lbl.bind("<Double-Button-1>", lambda e: self.copy_text(self.word_lbl.cget("text")))
+        for w in self.detail_widgets:     # whatever you select is copied right away
+            w.bind("<ButtonRelease-1>", lambda e, w=w: self.after_select(w), add="+")
 
         self.update_status()
         self.place_window()
@@ -275,7 +339,7 @@ class App:
         for name, size in CARD_FONT_SIZES.items():
             self.card_fonts[name].configure(size=round(size * self.zoom))
         wrap = int(320 * self.scale)
-        for w in [self.word_lbl, self.trans_lbl, self.senses_lbl]:
+        for w in [self.word_lbl, self.pron_lbl, self.trans_lbl, self.senses_lbl]:
             w.configure(wraplength=wrap)
         if hasattr(self, "avatar"):
             self.refresh_mood()
@@ -319,7 +383,9 @@ class App:
         badge.bind("<Button-1>", lambda e: on_click() if on_click else None)
         self.place_window()
 
-    def expand(self, seconds=EXPANDED_SECONDS):
+    def expand(self, seconds=None):
+        """Show the details. They stay until the next word replaces them or you hide them (the owner asked);
+        `seconds` folds them up after a while instead."""
         for w in self.detail_widgets:
             w.pack_forget()
         for w in self.detail_widgets:
@@ -328,7 +394,9 @@ class App:
         self.place_window()
         if self.collapse_job:
             self.root.after_cancel(self.collapse_job)
-        self.collapse_job = self.root.after(seconds * 1000, self.collapse)
+            self.collapse_job = None
+        if seconds:
+            self.collapse_job = self.root.after(seconds * 1000, self.collapse)
 
     def collapse(self):
         self.collapse_job = None
@@ -454,6 +522,14 @@ class App:
         self.root.clipboard_append(text)
         self.flash("✓ " + t("copied"))
 
+    def after_select(self, widget):
+        text = widget.selection()
+        if text.strip():
+            self.copy_text(text)
+
+    def details_shown(self):
+        return any(w.winfo_ismapped() for w in self.detail_widgets)
+
     def copy_current(self):
         item = self.current
         if not item:
@@ -467,6 +543,8 @@ class App:
             word = self.current["word"]
             menu.add_command(label=t("menu_copy", word=word if len(word) <= 24 else word[:24] + "…"),
                              command=self.copy_current)
+            if self.details_shown():
+                menu.add_command(label=t("menu_hide_details"), command=self.collapse)
             menu.add_separator()
         for feature in self.features:
             if feature.on:
