@@ -75,6 +75,10 @@ VK_SHIFT, VK_CONTROL, VK_C = 0x10, 0x11, 0x43
 MODIFIER_VKS = {VK_SHIFT, VK_CONTROL, 0xA0, 0xA1, 0xA2, 0xA3}
 OTHER_VKS = [vk for vk in range(1, 256) if vk not in MODIFIER_VKS]  # includes mouse buttons, Alt, Win
 KEYEVENTF_KEYUP = 0x2
+ALT_VKS = {0x12, 0xA4, 0xA5}        # Alt, left Alt, right Alt
+NOT_ALT_VKS = [vk for vk in range(1, 256) if vk not in ALT_VKS]
+ALT_TAP_SECONDS = 0.5               # a tap: Alt down and up this quickly, nothing else pressed meanwhile
+ALT_DOUBLE_SECONDS = 0.5            # two taps this close together hide or show everything
 
 # Windows UI language (primary id) -> our language code, for first-run defaults
 WINDOWS_LANGS = {0x09: "en", 0x11: "ja", 0x12: "ko", 0x0C: "fr", 0x07: "de", 0x0A: "es",
@@ -249,6 +253,9 @@ class App:
         self.clip_seq = user32.GetClipboardSequenceNumber()
         self.ignore_clip_until = 0.0
         self.hotkey = {"armed_at": None, "dirty": False}
+        self.alt = {"down_at": None, "dirty": False, "last_tap": 0.0}
+        self.hidden = False
+        self.hidden_windows = []
         self.collapse_job = None
         self.drag = None
         self.settings_win = None
@@ -556,6 +563,7 @@ class App:
                                f"{LANGUAGES[self.settings['native']][1]})", command=self.open_settings)
         menu.add_command(label=t("menu_resume") if not self.settings["listening"] else t("menu_pause"),
                          command=self.toggle_listening)
+        menu.add_command(label=t("menu_hide"), command=lambda: self.set_hidden(True))
         menu.add_command(label=t("menu_quit"), command=self.root.destroy)
         menu.tk_popup(e.x_root, e.y_root)
 
@@ -621,6 +629,7 @@ class App:
     def poll_hotkey(self):
         """A lone tap of Ctrl+Shift (no other key or mouse button in between) looks up the selection."""
         try:
+            self.poll_alt()
             ctrl, shift = key_down(VK_CONTROL), key_down(VK_SHIFT)
             hk = self.hotkey
             if ctrl or shift:
@@ -631,11 +640,58 @@ class App:
             else:
                 if (hk["armed_at"] is not None and not hk["dirty"]
                         and time.time() - hk["armed_at"] < HOTKEY_MAX_SECONDS
-                        and self.settings["listening"] and self.settings["trigger"] == "ctrl_shift"):
+                        and self.settings["listening"] and self.settings["trigger"] == "ctrl_shift"
+                        and not self.hidden):
                     self.grab_selection()
                 hk["armed_at"], hk["dirty"] = None, False
         finally:
             self.root.after(30, self.poll_hotkey)
+
+    def poll_alt(self):
+        """Double-tap Alt (two quick lone taps): hide everything, or bring it back. Alt held for a shortcut
+        (Alt+Tab, Alt+F4...) never counts: another key goes down in between."""
+        a, now = self.alt, time.time()
+        if key_down(0x12):
+            if a["down_at"] is None:
+                a["down_at"], a["dirty"] = now, False
+            if any(key_down(vk) for vk in NOT_ALT_VKS):
+                a["dirty"] = True
+        elif a["down_at"] is not None:
+            tap = not a["dirty"] and now - a["down_at"] < ALT_TAP_SECONDS
+            a["down_at"] = None
+            if not tap:
+                a["last_tap"] = 0.0
+            elif now - a["last_tap"] < ALT_DOUBLE_SECONDS:
+                a["last_tap"] = 0.0
+                self.set_hidden(not self.hidden)
+            else:
+                a["last_tap"] = now
+
+    def all_windows(self):
+        """The card and every window the app has open (cats, their things, toys, other windows)."""
+        out, todo = [self.root], list(self.root.winfo_children())
+        while todo:
+            w = todo.pop()
+            if isinstance(w, tk.Toplevel):
+                out.append(w)
+            todo.extend(w.winfo_children())
+        return out
+
+    def set_hidden(self, hidden):
+        """Hide everything (lookups pause meanwhile), or put back exactly what was showing."""
+        if hidden == self.hidden:
+            return
+        self.hidden = hidden
+        if hidden:
+            self.hidden_windows = [w for w in self.all_windows() if w.winfo_ismapped()]
+            for w in self.hidden_windows:
+                w.withdraw()
+        else:
+            for w in self.hidden_windows:
+                if w.winfo_exists():
+                    w.deiconify()
+            self.hidden_windows = []
+            self.place_window()
 
     def grab_selection(self):
         """Press Ctrl+C on the user's behalf to read the selection, then restore the old clipboard text."""
@@ -674,7 +730,7 @@ class App:
             seq = user32.GetClipboardSequenceNumber()
             if seq != self.clip_seq:
                 self.clip_seq = seq
-                if self.settings["listening"] and time.time() > self.ignore_clip_until:
+                if self.settings["listening"] and time.time() > self.ignore_clip_until and not self.hidden:
                     self.handle_clipboard()
         finally:
             self.root.after(300, self.poll_clipboard)

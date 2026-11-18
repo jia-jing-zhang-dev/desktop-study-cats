@@ -52,6 +52,9 @@ Journal (right-click → Journal…): one page per day with finished tasks and t
 library time, and a reflection you write (saved automatically). Right-click → Library log… shows today, this week, your
 streak and a calendar heatmap. A session you forget to end stops after 8 hours.
 
+Hide everything for a while (the card, the cats, their things): double-tap Alt. Double-tap Alt again to
+bring it all back.
+
 Notes
 - Ctrl+Shift switches keyboard layouts? Change "Look up a word by" to "Copying (Ctrl+C)" in
   Settings, or turn off the Windows input-language hot key.

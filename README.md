@@ -117,6 +117,7 @@ Windows SmartScreen asks the first time (**More info → Run anyway**).
 | Look back on a day | Right-click → **Journal…** |
 | Change languages, voice, pomodoro length | Right-click → **Settings…** |
 | Stop it for a while | Right-click → **Pause** |
+| Hide everything (card, cats, windows) | Double-tap **Alt**; double-tap again to bring it all back |
 
 Sentences are translated and read aloud, but only words and short phrases (up to 4 words) go into your word list.
 
